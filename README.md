@@ -171,7 +171,13 @@ AndroidApp/
 
 ## 📱 运行效果 / Screenshots
 
+### 实物展示 / Hardware Photo
+
+![实物图](assets/环境监测节点项目实拍图.jpg)
+
 ### 串口调试输出 / Serial Monitor
+
+![串口输出](assets/串口助手输出.png)
 
 ```
 [SHT30] 温度: 25.7 ℃ | 湿度: 58.3 %RH
@@ -185,7 +191,11 @@ AndroidApp/
 [AutoSleepTimer] 30秒无操作，准备进入休眠...
 ```
 
-### Android App 界面
+### Android App 界面 / App Screenshots
+
+| 实时数据 / Dashboard | 历史数据 / History |
+|:---:|:---:|
+| ![实时数据](assets/APP实时数据界面.jpg) | ![历史数据](assets/APP历史数据界面.jpg) |
 
 - **仪表盘**: 实时显示温度、湿度、光照强度、PM2.5
 - **历史数据**: 趋势曲线图 + 统计值 (最小值/平均值/最大值)

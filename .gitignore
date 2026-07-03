@@ -1,0 +1,39 @@
+# Keil MDK
+MDK-ARM/DebugConfig/
+MDK-ARM/RTE/
+MDK-ARM/*.uvguix.*
+MDK-ARM/*.uvoptx
+MDK-ARM/Listings/
+MDK-ARM/Objects/
+*.axf
+*.crf
+*.d
+*.dep
+*.hex
+*.htm
+*.lnp
+*.lst
+*.map
+*.o
+*.sct
+*.sct
+*.tra
+
+# Android
+AndroidApp/.gradle/
+AndroidApp/build/
+AndroidApp/app/build/
+AndroidApp/local.properties
+*.iml
+.idea/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# CubeMX
+.mxproject

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="temp_color">#FF6B6B</color>
+    <color name="humi_color">#4ECDC4</color>
+    <color name="light_color">#FFD93D</color>
+    <color name="pm25_color">#6C5CE7</color>
+    <color name="background">#F5F6FA</color>
+    <color name="surface">#FFFFFF</color>
+    <color name="primary">#2D3436</color>
+    <color name="on_primary">#FFFFFF</color>
+</resources>

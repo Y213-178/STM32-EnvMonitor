@@ -175,6 +175,23 @@ static void OLED_WriteData(uint8_t Data)
 }
 
 //
+//
+//
+/* 关显示 + 关电荷泵（进 STANDBY 前调用）
+ *
+ * SSD1306 只清 GDDRAM（OLED_Clear）时，显示屏和内部电荷泵仍然工作，
+ * 待机电流约 100~200uA。发 0xAE 关显示、0x8D/0x10 关电荷泵后，
+ * 芯片进入睡眠态，电流降到约 10uA。
+ *
+ * 注意：调用后屏幕全黑且不再响应显示，必须重新 OLED_Init() 才能恢复。 */
+void OLED_DisplayOff(void)
+{
+    OLED_WriteCommand(0xAE);        /* Display OFF */
+    OLED_WriteCommand(0x8D);        /* 电荷泵设置 */
+    OLED_WriteCommand(0x10);        /* 0x10 = 电荷泵关闭 */
+}
+
+//
 //)
 //)
 void OLED_SetCursor(uint8_t Y, uint8_t X)

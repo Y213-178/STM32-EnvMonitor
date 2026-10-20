@@ -12,7 +12,6 @@
 #include "i2c.h"
 #include "spi.h"
 #include "usart.h"
-#include "iwdg.h"
 #include "rtc.h"
 #include "oled.h"
 #include "sht30.h"
@@ -22,6 +21,7 @@
 #include "esp8266.h"
 #include "onenet_mqtt.h"
 #include "low_power.h"
+#include "battery.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
@@ -37,16 +37,12 @@ uint16_t g_pm1_0 = 0, g_pm2_5 = 0, g_pm10 = 0;
 
 extern uint8_t g_low_power_flag;
 extern SemaphoreHandle_t g_low_power_sem;
+extern uint32_t RTC_GetSecondsSinceEpoch(void);   /* rtc.c：跨休眠连续的秒数（时间戳用） */
 
 #define START_TASK_STACK  200
 #define START_TASK_PRIORITY  6
 TaskHandle_t start_task_handle;
 void start_task(void * pvParameters);
-
-#define WATCHDOGTASK_STACK  100
-#define WATCHDOGTASK_PRIORITY  7
-TaskHandle_t WatchdogTask_handle;
-void WatchdogTask(void * pvParameters);
 
 #define NETWORKTASK_STACK  384
 #define NETWORKTASK_PRIORITY  5
@@ -67,12 +63,6 @@ void DisplayTask(void * pvParameters);
 #define LOWPOWERTASK_PRIORITY  6
 TaskHandle_t LowPowerTask_handle;
 void LowPower_Task(void * pvParameters);
-
-#define AUTOSLEEP_TIMER_NAME       "AutoSleepTimer"
-#define AUTOSLEEP_TIMER_PERIOD     pdMS_TO_TICKS(120000)
-#define AUTOSLEEP_TIMER_RELOAD     pdFALSE
-TimerHandle_t g_auto_sleep_timer;
-void AutoSleep_Timer_Callback(TimerHandle_t xTimer);
 
 void freertos_start(void)
 {
@@ -108,13 +98,17 @@ void start_task(void * pvParameters)
     if(W25Q64_Init() == 0) { printf("[W25Q64] Init OK\r\n"); }
     else { printf("[W25Q64] Init FAILED\r\n"); }
 
+    /* 电池检测初始化：创建 ADC 互斥量 + 配置 ADC1。
+     * 必须在这里（任何任务跑起来之前）调用：
+     * NetworkTask 和 SensorTask 都会用 ADC1，如果让它们各自"惰性创建"互斥量，
+     * 可能创建出两个不同的互斥量，保护就失效了。 */
+    Battery_Init();
+
     memset(&g_task_alive, 0, sizeof(TaskAlive_t));
     g_task_alive.sensor_task_alive = 1;
     g_task_alive.network_task_alive = 1;
 
     LowPower_Init();
-
-    HAL_IWDG_Refresh(&hiwdg);
 
     taskENTER_CRITICAL();
 
@@ -132,13 +126,6 @@ void start_task(void * pvParameters)
                       (UBaseType_t) SENSORTASK_PRIORITY,
                       (TaskHandle_t *) &SensorTask_handle);
 
-    BaseType_t res1 = xTaskCreate((TaskFunction_t) WatchdogTask,
-                      (char * ) "WatchdogTask",
-                      (configSTACK_DEPTH_TYPE) WATCHDOGTASK_STACK,
-                      (void *) NULL,
-                      (UBaseType_t) WATCHDOGTASK_PRIORITY,
-                      (TaskHandle_t *) &WatchdogTask_handle);
-
     BaseType_t res4 = xTaskCreate((TaskFunction_t) DisplayTask,
                       (char * ) "DisplayTask",
                       (configSTACK_DEPTH_TYPE) DISPLAYTASK_STACK,
@@ -155,23 +142,6 @@ void start_task(void * pvParameters)
 
     taskEXIT_CRITICAL();
 
-    TimerHandle_t res_timer = xTimerCreate((const char *) AUTOSLEEP_TIMER_NAME,
-                                     (TickType_t) AUTOSLEEP_TIMER_PERIOD,
-                                     (UBaseType_t) AUTOSLEEP_TIMER_RELOAD,
-                                     (void *) NULL,
-                                     (TimerCallbackFunction_t) AutoSleep_Timer_Callback);
-
-    if(res_timer != NULL)
-    {
-        g_auto_sleep_timer = res_timer;
-        xTimerStart(g_auto_sleep_timer, 0);
-        printf("AutoSleepTimer started (120s)\r\n");
-    }
-    else { printf("AutoSleepTimer FAILED\r\n"); }
-
-    if(res1 == pdPASS) printf("WatchdogTask created OK\r\n");
-    else printf("WatchdogTask FAILED\r\n");
-
     if(res2 == pdPASS) printf("NetworkTask created OK\r\n");
     else printf("NetworkTask FAILED\r\n");
 
@@ -187,37 +157,52 @@ void start_task(void * pvParameters)
     vTaskDelete(NULL);
 }
 
-void WatchdogTask(void * pvParameters)
-{
-    vTaskDelay(pdMS_TO_TICKS(1000));
-
-    while(1)
-    {
-        if(g_task_alive.sensor_task_alive == 1 && g_task_alive.network_task_alive == 1)
-        {
-            HAL_IWDG_Refresh(&hiwdg);
-            printf("[Watchdog] All OK, feed\r\n");
-            memset(&g_task_alive, 0, sizeof(TaskAlive_t));
-        }
-        else { printf("[Watchdog] ERROR! Wait reset\r\n"); }
-
-        vTaskDelay(pdMS_TO_TICKS(2000));
-    }
-}
-
-/* WiFi -> OneNet MQTT -> upload -> sleep */
+/* WiFi -> OneNet MQTT -> upload -> sleep
+ * 常亮模式（PA0/冷启动）：持续循环，每 10min 上报一次，等 KEY1 手动切休眠。
+ * 周期模式（RTC 闹钟唤醒）：采集+上传一轮后自动回睡，OLED 不点屏。 */
 void NetworkTask(void * pvParameters)
 {
     uint8_t wifi_ok = 0;
     uint8_t mqtt_ok = 0;
+    uint8_t init_ok = 0;
     SensorDataFrame_t frame;
+    /* 周期模式：RTC 闹钟唤醒。联网+上传总预算 90s，超时也回睡（失败帧落盘，下轮补传） */
+    uint8_t periodic_mode = (g_wakeup_reason == WAKEUP_REASON_RTC);
+    uint32_t deadline = periodic_mode ? (HAL_GetTick() + 90000UL) : 0;
 
     g_task_alive.network_task_alive = 1;
     vTaskDelay(pdMS_TO_TICKS(1000));
 
-    printf("[ESP8266] Init start...");
-    while (ESP8266_Init() != 0)
+    /* ===== 电池低压保护（新板 v3.0）=====
+     * 电池低于 3.40V 时不再联网上传，直接进入关机模式（STANDBY，仅 PA0 唤醒），
+     * 避免锂电过放损伤、同时避免 ME6211 输入不足导致 3.3V 轨跌落而随机复位。
+     * 用户插 USB 充电后按 PWR(PA0) 即可重新开机。 */
     {
+        float vbat = Battery_ReadVoltage();
+        if (Battery_IsLow(vbat))
+        {
+            printf("[BAT] LOW %.2fV (< %.2fV), shutdown to protect battery\r\n",
+                   vbat, BATTERY_LOW_VOLTAGE);
+            g_low_power_action = LOW_POWER_ACTION_OFF;   /* 关机：无闹钟，仅 PA0 唤醒 */
+            if (g_low_power_sem != NULL)
+            {
+                xSemaphoreGive(g_low_power_sem);
+            }
+            vTaskSuspend(NULL);   /* 等 LowPower_Task 进 STANDBY（芯片随即复位） */
+            return;
+        }
+        printf("[BAT] %.2f V (%u%%)\r\n", vbat, Battery_GetPercent(vbat));
+    }
+
+    printf("[ESP8266] Init start...");
+    while (init_ok == 0)
+    {
+        if (ESP8266_Init() == 0)
+        {
+            init_ok = 1;
+            break;
+        }
+
         printf("[ESP8266] Init failed, retry in 3s...");
         g_task_alive.network_task_alive = 1;
 
@@ -226,9 +211,88 @@ void NetworkTask(void * pvParameters)
             g_task_alive.network_task_alive = 1;
             vTaskDelay(pdMS_TO_TICKS(100));
         }
-    }
-    printf("[ESP8266] Init OK");
 
+        if (periodic_mode && HAL_GetTick() > deadline) break;  /* 预算耗尽：放弃本轮联网 */
+    }
+    printf("[ESP8266] Init %s\r\n", init_ok ? "OK" : "TIMEOUT");
+
+    if (periodic_mode)
+    {
+        /* ===== 周期模式：一次性上传，然后自动回睡 ===== */
+        while (wifi_ok == 0)
+        {
+            printf("[WiFi] Connecting: %s...", WIFI_SSID);
+            if (ESP8266_ConnectWiFi() == 0) wifi_ok = 1;
+            else if (HAL_GetTick() > deadline) break;
+            else vTaskDelay(pdMS_TO_TICKS(2000));
+        }
+
+        while (wifi_ok && mqtt_ok == 0)
+        {
+            printf("[OneNet] Connecting MQTT...");
+            if (Onenet_Connect() == 0) mqtt_ok = 1;
+            else if (HAL_GetTick() > deadline) break;
+            else vTaskDelay(pdMS_TO_TICKS(2000));
+        }
+
+        if (mqtt_ok)
+        {
+            printf("[W25Q64] Upload offline data...");
+            while (W25Q64_RetrieveData(&frame) == 0)
+            {
+                if (Onenet_Publish(frame.temperature, frame.humidity,
+                                   frame.light, frame.pm25,
+                                   Battery_GetPercent(g_battery_voltage)) == 0)
+                {
+                    printf("[W25Q64] Upload OK");
+                }
+                else
+                {
+                    printf("[W25Q64] Upload FAILED, stop replay");
+                    break;
+                }
+                g_task_alive.network_task_alive = 1;
+                vTaskDelay(pdMS_TO_TICKS(100));
+            }
+            printf("[W25Q64] Offline data done");
+
+            if (Onenet_Publish(g_temp, g_humi, g_light, g_pm2_5,
+                               Battery_GetPercent(g_battery_voltage)) == 0)
+            {
+                printf("[OneNet] Upload OK: T=%.1f H=%.1f L=%.1f PM2.5=%d",
+                       g_temp, g_humi, g_light, g_pm2_5);
+            }
+            else
+            {
+                printf("[OneNet] Upload failed, save to flash");
+                frame.temperature = g_temp;
+                frame.humidity    = g_humi;
+                frame.light       = g_light;
+                frame.pm25        = g_pm2_5;
+                frame.timestamp   = RTC_GetSecondsSinceEpoch();
+                W25Q64_StoreData(&frame);
+            }
+        }
+        else
+        {
+            /* 本轮未连上云：当前帧落盘，下周期补传 */
+            printf("[OneNet] MQTT failed, save to flash");
+            frame.temperature = g_temp;
+            frame.humidity    = g_humi;
+            frame.light       = g_light;
+            frame.pm25        = g_pm2_5;
+            frame.timestamp   = RTC_GetSecondsSinceEpoch();
+            W25Q64_StoreData(&frame);
+        }
+
+        printf("[Network] Periodic cycle done, sleeping...\r\n");
+        ESP8266_EnterLightSleep();
+        g_low_power_action = LOW_POWER_ACTION_PERIODIC;   /* 明确下一轮仍是周期模式 */
+        if (g_low_power_sem != NULL) xSemaphoreGive(g_low_power_sem);
+        vTaskSuspend(NULL);   /* 等 LowPower_Task 进 STANDBY（芯片随即复位） */
+    }
+
+    /* ===== 常亮模式：原逻辑，持续循环，等 KEY1 手动切休眠 ===== */
     while (1)
     {
         if (wifi_ok == 0)
@@ -262,7 +326,8 @@ void NetworkTask(void * pvParameters)
                 while (W25Q64_RetrieveData(&frame) == 0)
                 {
                     if (Onenet_Publish(frame.temperature, frame.humidity,
-                                       frame.light, frame.pm25) == 0)
+                                       frame.light, frame.pm25,
+                                       Battery_GetPercent(g_battery_voltage)) == 0)
                     {
                         printf("[W25Q64] Upload OK");
                     }
@@ -284,7 +349,7 @@ void NetworkTask(void * pvParameters)
                 frame.humidity    = g_humi;
                 frame.light       = g_light;
                 frame.pm25        = g_pm2_5;
-                frame.timestamp   = xTaskGetTickCount();
+                frame.timestamp   = RTC_GetSecondsSinceEpoch();
                 W25Q64_StoreData(&frame);
 
                 vTaskDelay(pdMS_TO_TICKS(2000));
@@ -294,10 +359,14 @@ void NetworkTask(void * pvParameters)
 
         if (wifi_ok && mqtt_ok)
         {
-            if (Onenet_Publish(g_temp, g_humi, g_light, g_pm2_5) == 0)
+            if (Onenet_Publish(g_temp, g_humi, g_light, g_pm2_5,
+                               Battery_GetPercent(g_battery_voltage)) == 0)
             {
                 printf("[OneNet] Upload OK: T=%.1f H=%.1f L=%.1f PM2.5=%d",
                        g_temp, g_humi, g_light, g_pm2_5);
+                /* 已成功连接并上传到云平台：让 ESP8266 进 light-sleep，等待期省电。
+                 * 网络未通时绝不提前调用，否则会打断重试流程。 */
+                ESP8266_EnterLightSleep();
             }
             else
             {
@@ -306,7 +375,7 @@ void NetworkTask(void * pvParameters)
                 frame.humidity    = g_humi;
                 frame.light       = g_light;
                 frame.pm25        = g_pm2_5;
-                frame.timestamp   = xTaskGetTickCount();
+                frame.timestamp   = RTC_GetSecondsSinceEpoch();
                 W25Q64_StoreData(&frame);
                 mqtt_ok = 0;
             }
@@ -325,9 +394,35 @@ void SensorTask(void * pvParameters)
     float temp, humi, light;
     TickType_t xLastWakeTime = xTaskGetTickCount();
 
+    /* ===== 上电顺序（新板 v3.0）=====
+     *
+     * 新板上 PMS5003 挂在 V5_PMS（来自升压模块），ESP8266 挂在 V3.3_SW（来自 U4），
+     * 两者都依赖 PB12 拉低 -> Q3 导通 -> 升压模块工作。
+     * MX_GPIO_Init() 已经把 PB12 拉低，这里再显式确认一次，保证不依赖初始化顺序。 */
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12, GPIO_PIN_RESET);   /* 打开升压（Q3 导通） */
+
+    /* 升压模块 + ME6211 建立输出需要时间（MT3608 起振几 ms，
+     * 加上 V5_MAIN/V3.3_SW 上 C4/C5/C6 的充电，50ms 足够）。 */
+    vTaskDelay(pdMS_TO_TICKS(50));
+
+    /* ===== 主动复位 PMS5003（新板新增 PB13 控制）=====
+     * PMS5003 偶发死机时（连续读不到数据），原来只能整机断电恢复。
+     * 现在每次上电/唤醒先给它一个复位脉冲：
+     *   RST 低 >= 1ms -> 拉高 -> 等待约 1s 让内部风扇/激光稳定并开始输出数据。
+     * 复位后必须等够时间再初始化 UART 收包，否则首帧会被丢弃。 */
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_RESET);
+    vTaskDelay(pdMS_TO_TICKS(10));
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_SET);
+    vTaskDelay(pdMS_TO_TICKS(1000));
+
     SHT30_Init();
     BH1750_Init();
     PMS5003_Init();
+
+    /* 初始化共花掉约 1.06s，重新对齐周期基准：
+     * 否则 xLastWakeTime 还是任务开始时的旧值，第一次 vTaskDelayUntil 会因为
+     * "目标时刻已过"而立刻返回，导致第一次循环间隔异常。 */
+    xLastWakeTime = xTaskGetTickCount();
 
     while(1)
     {
@@ -354,6 +449,12 @@ void SensorTask(void * pvParameters)
         }
         else { printf("[PMS5003] FAIL\r\n"); }
 
+        /* 电池电压采集（新板新增 PA1 + R14/R15 分压）*/
+        {
+            float vbat = Battery_ReadVoltage();
+            printf("[BAT] %.2f V (%u%%)\r\n", vbat, Battery_GetPercent(vbat));
+        }
+
         printf("------------------------\r\n");
 
         g_task_alive.sensor_task_alive = 1;
@@ -364,38 +465,92 @@ void SensorTask(void * pvParameters)
 
 void DisplayTask(void * pvParameters)
 {
-    OLED_Init();
-    OLED_Clear();
-    printf("OLED Init OK\r\n");
+    /* 周期模式（RTC 唤醒）不点屏：省电 + 夜间无光污染 */
+    if (g_wakeup_reason != WAKEUP_REASON_RTC)
+    {
+        OLED_Init();
+        OLED_Clear();
+        printf("OLED Init OK\r\n");
+    }
 
     while(1)
     {
-        OLED_ShowString(1, 1, "TEMP:");
-        OLED_ShowFloat(1, 6, g_temp, 1);
-        OLED_ShowString(1, 11, "C");
+        if (g_wakeup_reason != WAKEUP_REASON_RTC)
+        {
+            char line[24];
+            uint8_t bat_pct;
 
-        OLED_ShowString(2, 1, "HUMI:");
-        OLED_ShowFloat(2, 6, g_humi, 1);
-        OLED_ShowString(2, 11, "%");
+            /* 电量显示死区（2%）：
+             * 电池内阻造成的压降 + ADC 噪声会让换算结果在相邻几个百分点之间
+             * 来回跳（例如 34/37/38）。这里只有变化达到 2% 才更新显示值，
+             * 视觉上就稳定了。初值 0xFF 表示"还没显示过"，第一次一定更新。 */
+            {
+                static uint8_t s_disp_pct = 0xFFU;
+                uint8_t now  = Battery_GetPercent(g_battery_voltage);
+                uint8_t diff = (now > s_disp_pct) ? (uint8_t)(now - s_disp_pct)
+                                                  : (uint8_t)(s_disp_pct - now);
+                if (diff >= 2U)
+                {
+                    s_disp_pct = now;
+                    bat_pct    = now;
+                }
+                else
+                {
+                    bat_pct    = s_disp_pct;
+                }
+            }
 
-        OLED_ShowString(3, 1, "PM2.5:");
-        OLED_ShowNum(3, 7, g_pm2_5, 3);
-        OLED_ShowString(3, 11, "ug");
+            /* 第一行：T:26.1 C          34%
+             *   col 1-2   : "T:"
+             *   col 3-7   : 温度，%-5.1f 固定 5 字符宽（26.1 / -5.0 / 100.5）
+             *   col 8     : "C"
+             *   col 9-12  : 空格
+             *   col 13-16 : 电量 "%3u%%" 共 4 字符 -> " 34%" / "100%"
+             * 用 snprintf 生成【固定 16 字符宽】的整行再整体写入：
+             * 这样温度或电量位数变化时不会残留上一次的旧字符。 */
+            snprintf(line, sizeof(line), "T:%-5.1fC    %3u%%", g_temp, bat_pct);
+            OLED_ShowString(1, 1, line);
 
-        OLED_ShowString(4, 1, "Light:");
-        OLED_ShowFloat(4, 7, g_light, 1);
-        OLED_ShowString(4, 13, "Lux");
+            /* 第二行：H:56.5 %
+             *   col 1-2  : "H:"
+             *   col 3-7  : 湿度，%-5.1f 固定 5 字符宽
+             *   col 8    : "%"
+             *   col 9-16 : 空格补齐
+             * 去掉原来第 16 列的工作模式指示（1=常亮 / 2=周期）。
+             * 必须补齐到 16 列，否则上一帧残留的字符会留在屏幕上。 */
+            snprintf(line, sizeof(line), "H:%-5.1f%%", g_humi);
+            {
+                size_t used = strlen(line);
+                if (used < 16U)
+                {
+                    memset(line + used, ' ', 16U - used);
+                }
+                line[16] = '\0';
+            }
+            OLED_ShowString(2, 1, line);
+
+            OLED_ShowString(3, 1, "PM2.5:");
+            OLED_ShowNum(3, 7, g_pm2_5, 3);
+            OLED_ShowString(3, 11, "ug");
+
+            /* 第四行：L:136.7 Lux
+             *   col 1-2  : "L:"
+             *   col 3-7  : 光照值，%-5.1f 固定 5 字符宽
+             *   col 8    : 空格
+             *   col 9-11 : "Lux"
+             *   col 12-16: 空格补齐（避免光照值位数变化时残留旧字符）*/
+            snprintf(line, sizeof(line), "L:%-5.1f Lux", g_light);
+            {
+                size_t used = strlen(line);
+                if (used < 16U)
+                {
+                    memset(line + used, ' ', 16U - used);
+                }
+                line[16] = '\0';
+            }
+            OLED_ShowString(4, 1, line);
+        }
 
         vTaskDelay(pdMS_TO_TICKS(1000));
-    }
-}
-
-void AutoSleep_Timer_Callback(TimerHandle_t xTimer)
-{
-    printf("[AutoSleepTimer] 120s no op, entering sleep...\r\n");
-
-    if(g_low_power_sem != NULL)
-    {
-        xSemaphoreGive(g_low_power_sem);
     }
 }

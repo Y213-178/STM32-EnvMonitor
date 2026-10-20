@@ -230,19 +230,24 @@ uint8_t Onenet_Connect(void)
     return result;
 }
 
-uint8_t Onenet_Publish(float temp, float humi, float light, uint16_t pm25)
+uint8_t Onenet_Publish(float temp, float humi, float light, uint16_t pm25, uint8_t battery)
 {
     uint8_t mqtt_buf[512];
     char json[256];
 
+    /* params 里每一项都要和 OneNET 物模型里定义的【标识符】完全一致：
+     *   temperature / humidity / light / pm25 / battery
+     * 云端没定义的标识符会被服务端丢弃（或不报错但收不到），
+     * 所以新增字段前必须先在控制台加好属性。 */
     snprintf(json, sizeof(json),                                              
         "{\"id\":\"1\",\"version\":\"1.0\",\"params\":{"
         "\"temperature\":{\"value\":%.1f},"
         "\"humidity\":{\"value\":%.1f},"
         "\"light\":{\"value\":%.1f},"
-        "\"pm25\":{\"value\":%d}"
+        "\"pm25\":{\"value\":%d},"
+        "\"battery\":{\"value\":%u}"
         "}}",
-        temp, humi, light, pm25);
+        temp, humi, light, pm25, (unsigned)battery);
 
     uint16_t mqtt_len = Onenet_BuildPublish(mqtt_buf, json);                  
     return ESP8266_SendRaw(mqtt_buf, mqtt_len);                               

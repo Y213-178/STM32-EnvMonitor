@@ -8,6 +8,7 @@ import com.envmonitor.app.data.model.HistoryPoint
 import com.envmonitor.app.data.model.SensorData
 import com.envmonitor.app.data.repository.SensorRepository
 import com.envmonitor.app.util.Constants
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -34,11 +35,15 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
     private val _state = MutableStateFlow(HistoryState())
     val state: StateFlow<HistoryState> = _state.asStateFlow()
 
+    /** 当前正在跑的观察协程；切换数据流/时间范围时先取消再重启，避免重复写入状态 */
+    private var historyJob: Job? = null
+
     val streamOptions = listOf(
         Constants.STREAM_TEMPERATURE to "温度",
         Constants.STREAM_HUMIDITY to "湿度",
         Constants.STREAM_LIGHT to "光照强度",
-        Constants.STREAM_PM25 to "PM2.5"
+        Constants.STREAM_PM25 to "PM2.5",
+        Constants.STREAM_BATTERY to "电量"
     )
 
     // 快捷时间范围选项
@@ -104,16 +109,21 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun loadHistory() {
-        val s = _state.value
-        viewModelScope.launch {
-            _state.value = s.copy(isLoading = true)
-            val points = repository.getHistory(s.selectedStream, s.startTime, s.endTime)
-            val allRaw = repository.getAllInRange(s.startTime, s.endTime)
-            _state.value = _state.value.copy(
-                points = points,
-                allPoints = allRaw,
-                isLoading = false
-            )
+        // 取消上一次观察（切换数据流/时间范围后，避免多个协程同时写状态）
+        historyJob?.cancel()
+        historyJob = viewModelScope.launch {
+            _state.value = _state.value.copy(isLoading = true)
+            // 持续观察：数据表任何变化（设备上报新记录、删除操作）都会自动重新查询
+            repository.observeHistoryRange(
+                _state.value.startTime,
+                _state.value.endTime
+            ).collect { list ->
+                _state.value = _state.value.copy(
+                    points = repository.toHistoryPoints(_state.value.selectedStream, list),
+                    allPoints = list,
+                    isLoading = false
+                )
+            }
         }
     }
 }

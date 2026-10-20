@@ -13,6 +13,7 @@ extern "C" {
 // 核心功能函数
 void OLED_Init(void);
 void OLED_Clear(void);
+void OLED_DisplayOff(void);
 void OLED_SetCursor(uint8_t Y, uint8_t X);
 void OLED_ShowChar(uint8_t Line, uint8_t Column, char Char);
 void OLED_ShowString(uint8_t Line, uint8_t Column, char *String);

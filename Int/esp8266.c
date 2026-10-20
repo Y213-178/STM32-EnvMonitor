@@ -270,3 +270,17 @@ uint8_t ESP8266_SendRaw(uint8_t *data, uint16_t len)
     }
     return ret;
 }
+
+/* 让 ESP8266 进入 light-sleep（芯片 ~0.5-1mA，UART 收到数据自动唤醒）。
+ * 仅在成功连接并上传数据到云平台后调用；固件不支持时返回 ERROR，直接忽略（无害）。 */
+void ESP8266_EnterLightSleep(void)
+{
+    if (ESP8266_SendCmd_WaitAck("AT+SLEEP=2", "OK", 1000) == 0)
+    {
+        printf("[ESP8266] Light-sleep armed\r\n");
+    }
+    else
+    {
+        printf("[ESP8266] AT+SLEEP=2 not supported, ignored\r\n");
+    }
+}

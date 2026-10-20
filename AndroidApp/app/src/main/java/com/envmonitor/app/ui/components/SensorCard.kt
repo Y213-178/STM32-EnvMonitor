@@ -10,6 +10,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AcUnit
 import androidx.compose.material.icons.filled.Air
+import androidx.compose.material.icons.filled.BatteryFull
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.WaterDrop
 import androidx.compose.material3.Card
@@ -25,6 +26,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.envmonitor.app.ui.theme.BatteryColor
 import com.envmonitor.app.ui.theme.HumiColor
 import com.envmonitor.app.ui.theme.LightColor
 import com.envmonitor.app.ui.theme.Pm25Color
@@ -40,7 +42,9 @@ enum class SensorType(
     TEMPERATURE("温度", "°C", Icons.Default.AcUnit, TempColor, 1),
     HUMIDITY("湿度", "%", Icons.Default.WaterDrop, HumiColor, 1),
     LIGHT("光照强度", "Lux", Icons.Default.LightMode, LightColor, 1),
-    PM25("PM2.5", "μg/m³", Icons.Default.Air, Pm25Color, 0)
+    PM25("PM2.5", "μg/m³", Icons.Default.Air, Pm25Color, 0),
+    /* 电池电量：整数百分比，不需要小数 */
+    BATTERY("电池电量", "%", Icons.Default.BatteryFull, BatteryColor, 0)
 }
 
 @Composable

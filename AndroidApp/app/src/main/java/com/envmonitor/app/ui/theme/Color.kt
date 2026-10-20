@@ -15,6 +15,8 @@ val TempColor = Color(0xFFFF6B6B)
 val HumiColor = Color(0xFF4ECDC4)
 val LightColor = Color(0xFFFFD93D)
 val Pm25Color = Color(0xFF6C5CE7)
+/* 电池电量：和 PM2.5 的紫区分开，用绿色，视觉上更"电源" */
+val BatteryColor = Color(0xFF2ECC71)
 
 val BackgroundLight = Color(0xFFF0F2F5)
 val SurfaceLight = Color(0xFFFFFFFF)

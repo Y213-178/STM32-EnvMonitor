@@ -22,7 +22,8 @@ extern "C" {
 #define BH1750_ONESHOT_LOW_RES      0x23
 
 void BH1750_Init(void);
-void BH1750_Reset(void);                                 
+void BH1750_Reset(void);
+void BH1750_PowerDown(void);                                 
 uint8_t BH1750_SetSensitivity(uint8_t mt_value);         
 uint8_t BH1750_Read(float * light_intensity);
 

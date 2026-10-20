@@ -199,7 +199,7 @@ void SysTick_Handler(void)
   /* USER CODE END SysTick_IRQn 0 */
 
   /* USER CODE BEGIN SysTick_IRQn 1 */
-  if (xTaskGetSchedulerState() != taskSCHEDULER_NOT_STARTED)  // 每1秒触发一次 是整个FreeRTOS调度系统的心跳
+  if (xTaskGetSchedulerState() != taskSCHEDULER_NOT_STARTED)  // 每1毫秒触发一次 是整个FreeRTOS调度系统的心跳
 	{
 		xPortSysTickHandler();
 	}
@@ -289,6 +289,8 @@ void RTC_Alarm_IRQHandler(void)
 
 // 全局变量，用于记录按键按下的时间（消抖用）
 static uint32_t key_last_press_time = 0;
+// 本次按键按下的时刻（松开时按时长区分单按/长按）
+static uint32_t key_press_start_tick = 0;
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
@@ -314,9 +316,12 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
-    if(GPIO_Pin == GPIO_PIN_1) 
+    if(GPIO_Pin == GPIO_PIN_1)
     {
         uint32_t current_time = HAL_GetTick();
+
+        /* 统一 200ms 消抖：按下/松开的边沿都过滤抖动。
+         * 硬件上 PB1 还有 C19(100nF) 对地消抖，软硬结合更可靠。 */
         if(current_time - key_last_press_time < 200)
         {
             key_last_press_time = current_time;
@@ -324,33 +329,37 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
         }
         key_last_press_time = current_time;
 
-        __HAL_GPIO_EXTI_CLEAR_IT(GPIO_PIN_1);
-
-        g_wakeup_reason = WAKEUP_REASON_KEY;
-
-        BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-        if(g_low_power_sem != NULL)
+        if(HAL_GPIO_ReadPin(KEY1_GPIO_Port, KEY1_Pin) == GPIO_PIN_RESET)
         {
-            xSemaphoreGiveFromISR(g_low_power_sem, &xHigherPriorityTaskWoken);
+            /* 按下：记录按下时刻（松开时按按住时长判定单按/长按） */
+            key_press_start_tick = current_time;
         }
-        portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+        else
+        {
+            /* 松开：≥3s=长按关机(无闹钟)，<3s=单按进周期模式(30min 闹钟) */
+            uint32_t held_ms = current_time - key_press_start_tick;
+
+            g_low_power_action = (held_ms >= KEY_LONG_PRESS_MS)
+                                 ? LOW_POWER_ACTION_OFF
+                                 : LOW_POWER_ACTION_PERIODIC;
+
+            BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+            if(g_low_power_sem != NULL)
+            {
+                xSemaphoreGiveFromISR(g_low_power_sem, &xHigherPriorityTaskWoken);
+            }
+            portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+        }
     }
 }
 
 void HAL_RTC_AlarmAEventCallback(RTC_HandleTypeDef *hrtc)
 {
+    /* 周期模式的睡眠节奏由 NetworkTask 上传完主动给 sem 控制，
+     * 这里只清标志（防御），不向 LowPower_Task 发信号——
+     * 否则常亮模式会被残留闹钟被动拉回睡眠。 */
     EXTI->PR = EXTI_PR_PR17;
-
     __HAL_RTC_ALARM_CLEAR_FLAG(hrtc, RTC_FLAG_ALRAF);
-
-    g_wakeup_reason = WAKEUP_REASON_RTC;
-
-    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-    if(g_low_power_sem != NULL)
-    {
-        xSemaphoreGiveFromISR(g_low_power_sem, &xHigherPriorityTaskWoken);
-    }
-    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 }
 
 /* USER CODE END 1 */

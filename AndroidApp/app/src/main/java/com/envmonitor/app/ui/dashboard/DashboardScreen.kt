@@ -31,6 +31,7 @@ import com.envmonitor.app.data.mqtt.MqttManager
 import com.envmonitor.app.ui.components.SensorCard
 import com.envmonitor.app.ui.components.SensorType
 import com.envmonitor.app.ui.theme.TextSecondary
+import com.envmonitor.app.util.Constants
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -84,13 +85,16 @@ fun DashboardScreen(
             Spacer(modifier = Modifier.height(2.dp))
 
             Text(
-                text = "设备: env_monitor_01",
+                /* 设备名取自 Constants，避免在 UI 里硬编码 */
+                text = "设备: ${Constants.DEVICE_ID}",
                 style = MaterialTheme.typography.bodyMedium,
                 color = TextSecondary
             )
             Text(
+                /* 带上日期：App 关了一段时间再打开时，最新数据可能来自前一天，
+                 * 只显示 HH:mm:ss 会让人误以为是刚才的数据。 */
                 text = if (state.lastUpdateTime > 0L)
-                    "更新于 ${SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(state.lastUpdateTime))}"
+                    "更新于 ${SimpleDateFormat("MM-dd HH:mm:ss", Locale.getDefault()).format(Date(state.lastUpdateTime))}"
                 else "等待数据...",
                 style = MaterialTheme.typography.labelSmall,
                 color = TextSecondary.copy(alpha = 0.7f)
@@ -105,6 +109,8 @@ fun DashboardScreen(
         SensorCard(type = SensorType.HUMIDITY, value = data.humidity)
         SensorCard(type = SensorType.LIGHT, value = data.lightIntensity)
         SensorCard(type = SensorType.PM25, value = data.pm25.toFloat())
+        // 电池电量：固件上报的是 0~100 的整数百分比
+        SensorCard(type = SensorType.BATTERY, value = data.battery.toFloat())
 
         Spacer(modifier = Modifier.height(80.dp))
     }

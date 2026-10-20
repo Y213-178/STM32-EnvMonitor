@@ -47,6 +47,25 @@ void BH1750_Init(void)
 	vTaskDelay(pdMS_TO_TICKS(180));                                      
 }
 
+/* 让 BH1750 进入 Power Down 模式（进 STANDBY 前调用）
+ *
+ * BH1750_Init() 里设的是 BH1750_CONTINUOUS_HIGH_RES(0x10) 连续测量模式，
+ * 芯片会一直周期性测光，数据手册典型工作电流 120µA；不主动关掉的话，
+ * 整个睡眠期间这 120µA 都在白烧。
+ *
+ * 发 0x00(Power Down) 后电流降到约 0.1µA（typ）。
+ * 唤醒后重新 BH1750_Init() 即可恢复连续测量。 */
+void BH1750_PowerDown(void)
+{
+	uint8_t cmd = BH1750_POWER_DOWN;
+
+	if(xSemaphoreTake(g_I2C_Mutex, portMAX_DELAY) == pdPASS)
+	{
+		HAL_I2C_Master_Transmit(&hi2c1, BH1750_I2C_ADDR, &cmd, 1, 100);
+		xSemaphoreGive(g_I2C_Mutex);
+	}
+}
+
 void BH1750_Reset(void)
 {
 	uint8_t cmd = BH1750_RESET;

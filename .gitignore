@@ -37,3 +37,42 @@ Thumbs.db
 
 # CubeMX
 .mxproject
+
+# ============================================================
+# 补充（开源前自查用）
+# ============================================================
+
+# 密钥 —— 如果以后把 WiFi/OneNET 凭据抽到单独文件，取消下面注释
+#Int/config.h
+#**/secrets.h
+**/local.properties
+
+# Keil 按工程名生成的编译输出目录（约 90 MB，绝对不能提交）
+MDK-ARM/Environmental_Monitoring_Node/
+MDK-ARM/LEDFreeRTOS/
+
+# Keil 其它产物
+MDK-ARM/*.uvguix.*
+MDK-ARM/build_cli.log
+MDK-ARM/JLinkLog.txt
+MDK-ARM/*.scvd
+MDK-ARM/*.sbr
+MDK-ARM/*.bin
+
+# Android 打包产物
+*.apk
+*.aab
+*.ap_
+*.dex
+AndroidApp/.cxx/
+AndroidApp/captures/
+AndroidApp/*.hprof
+
+# 临时 / 备份文件
+*.bak
+*.tmp
+*.log
+*~
+
+# CubeMX 备份文件
+*.bak*

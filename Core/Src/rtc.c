@@ -57,23 +57,28 @@ void MX_RTC_Init(void)
   /* USER CODE END Check_RTC_BKUP */
 
   /** Initialize RTC and set the Time and Date
-  */
-  sTime.Hours = 0x0;
-  sTime.Minutes = 0x0;
-  sTime.Seconds = 0x0;
-
-  if (HAL_RTC_SetTime(&hrtc, &sTime, RTC_FORMAT_BCD) != HAL_OK)
+   */
+  /* 手改的生成段（CubeMX 重新生成会被还原）：STANDBY 唤醒复位后跳过时间初始化，
+   * 保留 RTC 跨休眠的连续计时（只有上电/冷启动才清零）。与 main.c 的唤醒分支配合。 */
+  if (__HAL_PWR_GET_FLAG(PWR_FLAG_SB) == RESET)
   {
-    Error_Handler();
-  }
-  DateToUpdate.WeekDay = RTC_WEEKDAY_MONDAY;
-  DateToUpdate.Month = RTC_MONTH_JANUARY;
-  DateToUpdate.Date = 0x1;
-  DateToUpdate.Year = 0x0;
+    sTime.Hours = 0x0;
+    sTime.Minutes = 0x0;
+    sTime.Seconds = 0x0;
 
-  if (HAL_RTC_SetDate(&hrtc, &DateToUpdate, RTC_FORMAT_BCD) != HAL_OK)
-  {
-    Error_Handler();
+    if (HAL_RTC_SetTime(&hrtc, &sTime, RTC_FORMAT_BCD) != HAL_OK)
+    {
+      Error_Handler();
+    }
+    DateToUpdate.WeekDay = RTC_WEEKDAY_MONDAY;
+    DateToUpdate.Month = RTC_MONTH_JANUARY;
+    DateToUpdate.Date = 0x1;
+    DateToUpdate.Year = 0x0;
+
+    if (HAL_RTC_SetDate(&hrtc, &DateToUpdate, RTC_FORMAT_BCD) != HAL_OK)
+    {
+      Error_Handler();
+    }
   }
   /* USER CODE BEGIN RTC_Init 2 */
 
@@ -162,6 +167,40 @@ void RTC_Set_Alarm_Seconds(uint32_t seconds)
 
     printf("[RTC] 闹钟已设置，%u秒后唤醒（目标时间：%02u:%02u:%02u）\r\n",
            seconds, alarm_hour, alarm_min, alarm_sec);
+}
+
+/* 返回从 2000-01-01 00:00:00 起累计的连续秒数（RTC 在 STANDBY 期间持续计数，不被唤醒复位清零）。
+ * 用于数据帧时间戳：比 xTaskGetTickCount() 更能反映真实发生时间。 */
+uint32_t RTC_GetSecondsSinceEpoch(void)
+{
+    RTC_DateTypeDef sDate = {0};
+    RTC_TimeTypeDef sTime = {0};
+    static const uint8_t mdays[12] = {31,28,31,30,31,30,31,31,30,31,30,31};
+    uint32_t days = 0;
+    uint16_t year;
+
+    HAL_RTC_WaitForSynchro(&hrtc);
+    HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);   /* 必须先读日期，再读时间 */
+    HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
+
+    /* 计算从 2000 年到当前年的整年天数 */
+    year = 2000U + sDate.Year;
+    for (uint16_t y = 2000U; y < year; y++)
+    {
+        days += (((y % 4U) == 0U && (y % 100U) != 0U) || (y % 400U) == 0U) ? 366U : 365U;
+    }
+    /* 加上当前年已过的完整月天数（含闰年二月） */
+    for (uint8_t m = 1U; m < sDate.Month; m++)
+    {
+        days += mdays[m - 1U];
+        if (m == 2U && (((year % 4U) == 0U && (year % 100U) != 0U) || (year % 400U) == 0U))
+        {
+            days += 1U;
+        }
+    }
+    days += (sDate.Date - 1U);
+
+    return days * 86400UL + sTime.Hours * 3600UL + sTime.Minutes * 60UL + sTime.Seconds;
 }
 
 /* USER CODE END 1 */

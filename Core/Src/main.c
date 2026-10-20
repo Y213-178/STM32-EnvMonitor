@@ -18,9 +18,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
-#include "fatfs.h"
 #include "i2c.h"
-#include "iwdg.h"
 #include "rtc.h"
 #include "spi.h"
 #include "usart.h"
@@ -29,6 +27,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "freertos_demo.h"
+#include "low_power.h"
 #include <stdio.h>
 /* USER CODE END Includes */
 
@@ -81,7 +80,30 @@ int main(void)
   HAL_Init();
 
   /* USER CODE BEGIN Init */
-
+  /* 检测 STANDBY 唤醒复位（F1：唤醒后系统复位，PWR_FLAG_SB 置位）。
+   * 注意：这里只读标志、不在此清除——rtc.c 的 MX_RTC_Init 需要靠 SB 标志
+   * 决定是否跳过 RTC 时间清零（保留跨休眠计时），清标志放到 MX_RTC_Init 之后。 */
+  __HAL_RCC_PWR_CLK_ENABLE();
+  hrtc.Instance = RTC;
+  if (__HAL_PWR_GET_FLAG(PWR_FLAG_SB))
+  {
+      /* RTC 闹钟标志 ALRAF 在 STANDBY 期间保持置位，可区分唤醒源 */
+      if (__HAL_RTC_ALARM_GET_FLAG(&hrtc, RTC_FLAG_ALRAF))
+      {
+          g_wakeup_reason = WAKEUP_REASON_RTC;
+      }
+      else
+      {
+          g_wakeup_reason = WAKEUP_REASON_KEY;
+      }
+      /* 判定完唤醒源后立即清 ALRAF：MX_RTC_Init 会使能 RTC_Alarm 中断，
+       * 若 ALRAF 仍置位会误触发；周期睡眠的闹钟在 STANDBY 里已作为唤醒源用掉。 */
+      __HAL_RTC_ALARM_CLEAR_FLAG(&hrtc, RTC_FLAG_ALRAF);
+  }
+  else
+  {
+      g_wakeup_reason = WAKEUP_REASON_KEY;   /* 上电/复位启动 */
+  }
   /* USER CODE END Init */
 
   /* Configure the system clock */
@@ -95,17 +117,35 @@ int main(void)
   MX_GPIO_Init();
   MX_USART1_UART_Init();
   MX_I2C1_Init();
-  MX_IWDG_Init();
-  HAL_IWDG_Refresh(&hiwdg);
   MX_SPI1_Init();
   MX_USART2_UART_Init();
   MX_USART3_UART_Init();
-  MX_FATFS_Init();
   MX_RTC_Init();
   /* USER CODE BEGIN 2 */
-  
+  /* 清除 STANDBY 唤醒标志（必须在 MX_RTC_Init 判定唤醒源之后清除） */
+  if (__HAL_PWR_GET_FLAG(PWR_FLAG_SB))
+  {
+      __HAL_PWR_CLEAR_FLAG(PWR_FLAG_SB);
+      __HAL_PWR_CLEAR_FLAG(PWR_FLAG_WU);
+      printf("[Main] Woke from STANDBY, reason=%s\r\n",
+             (g_wakeup_reason == WAKEUP_REASON_RTC) ? "RTC" : "KEY(PA0)");
+  }
+  else
+  {
+      printf("[Main] Cold boot\r\n");
+  }
+
+  /* 非 RTC 闹钟唤醒（PA0 手动 / 冷启动）→ 常亮模式：
+   * 取消上次周期睡眠可能残留的 RTC 闹钟，保证常亮期间不会被拉回睡眠。 */
+  if (g_wakeup_reason != WAKEUP_REASON_RTC)
+  {
+      HAL_RTC_DeactivateAlarm(&hrtc, RTC_ALARM_A);
+      __HAL_RTC_ALARM_CLEAR_FLAG(&hrtc, RTC_FLAG_ALRAF);
+      printf("[Main] Stale RTC alarm cleared (always-on mode)\r\n");
+  }
+
   freertos_start();
-  
+
   /* USER CODE END 2 */
 
   /* Infinite loop */

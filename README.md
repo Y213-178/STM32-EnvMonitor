@@ -132,8 +132,8 @@ Onenet_Publish() → AT+CIPSEND → JSON数据 → PUBLISH ACK
 
 | 参数 | 值 |
 |------|-----|
-| 产品ID | `Ky40wF6CXP` |
-| 设备名 | `env_monitor_01` |
+| 产品ID | `YOUR_PRODUCT_ID` |
+| 设备名 | `YOUR_DEVICE_NAME` |
 | Broker | `tcp://183.230.102.116:1883` |
 | 数据上报 | 每10分钟 → JSON格式 |
 | 认证 | Token鉴权 (HMAC-MD5) |
@@ -174,7 +174,7 @@ AndroidApp/
 [BH1750] 光照强度: 6.7 Lux
 [PMS5003] PM1.0: 12 ug/m3 | PM2.5: 17 ug/m3 | PM10: 17 ug/m3
 [ESP8266] Init complete!
-[WiFi] Connecting to Xiaomi13...
+[WiFi] Connecting to YOUR_WIFI_SSID...
 [WiFi] Connected! Got IP
 [OneNet] MQTT连接成功
 [OneNet] 上传成功: T=25.7 H=58.3 L=6.7 PM2.5=17

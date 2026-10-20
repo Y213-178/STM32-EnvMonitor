@@ -56,8 +56,10 @@ fun HistoryChart(
         val drawMax = maxVal + padRange
         val drawRange = drawMax - drawMin
         val padding = 8.dp.toPx()
+        /* 底部留出 16dp 给 X 轴时间标签，避免和最下面那条 Y 轴刻度挤在一起 */
+        val xLabelSpace = 16.dp.toPx()
         val availW = size.width - padding * 2
-        val availH = size.height - padding * 2
+        val availH = size.height - padding * 2 - xLabelSpace
 
         val labelPaint = android.graphics.Paint().apply {
             color = 0xFF999999.toInt()
@@ -77,32 +79,28 @@ fun HistoryChart(
             )
         }
 
-        // Time labels at bottom (moved further down)
+        // Time labels at bottom
+        // 修复点：原来循环里已经把最后一个点画了，后面又"Always show last point"
+        // 单独画一次 -> 同一个位置画两遍，字符串叠在一起糊成一团。
+        // 现在改成：均匀取最多 4 个刻度（含首尾）、去重、文字中心对齐并夹在画布内。
         val total = points.size
-        val step = maxOf(1, total / 4)
-        val timeY = size.height - 2.dp.toPx()
+        val timeY = size.height - 4.dp.toPx()
         val timeYPaint = android.graphics.Paint().apply {
             color = 0xFF999999.toInt()
             textSize = 9.sp.toPx()
         }
-        for (i in points.indices step step) {
-            val x = padding + availW * i / (total - 1).coerceAtLeast(1)
-            drawContext.canvas.nativeCanvas.drawText(
-                points[i].timestamp,
-                x - 14.dp.toPx(),
-                timeY,
-                timeYPaint
-            )
-        }
-        // Always show last point time
-        if (total > 1) {
-            val lastX = padding + availW * (total - 1) / (total - 1).coerceAtLeast(1)
-            drawContext.canvas.nativeCanvas.drawText(
-                points.last().timestamp,
-                lastX - 14.dp.toPx(),
-                timeY,
-                timeYPaint
-            )
+        if (total > 0) {
+            val labelCount = minOf(4, total)
+            val idxList: List<Int> = if (labelCount <= 1) listOf(0)
+            else (0 until labelCount).map { it * (total - 1) / (labelCount - 1) }
+
+            idxList.distinct().forEach { i ->
+                val x = padding + availW * i / (total - 1).coerceAtLeast(1)
+                val s = points[i].timestamp
+                val tw = timeYPaint.measureText(s)
+                val tx = (x - tw / 2f).coerceIn(0f, (size.width - tw).coerceAtLeast(0f))
+                drawContext.canvas.nativeCanvas.drawText(s, tx, timeY, timeYPaint)
+            }
         }
 
         // Data line

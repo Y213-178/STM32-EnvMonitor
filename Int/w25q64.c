@@ -1,5 +1,14 @@
 #include "w25q64.h"
 #include "task.h"
+#include <stdio.h>      /* 诊断打印用 */
+
+/* 兼容 W25Q128（16MB）：市面上很多模块实际焊的是 W25Q128，JEDEC ID 为 0xEF4018。
+ * 两者指令集、扇区大小(4KB)、页大小(256B)完全相同，只是容量不同；
+ * 本工程只用低 8MB，所以按 W25Q64 的地址空间使用是完全安全的。 */
+#ifndef W25Q128_JEDEC_ID
+#define W25Q128_JEDEC_ID          0xEF4018
+#endif
+#define W25Q_JEDEC_ID_MATCH(id)   (((id) == W25Q64_JEDEC_ID) || ((id) == W25Q128_JEDEC_ID))
 
 #define W25Q_CMD_WRITE_ENABLE     0x06
 #define W25Q_CMD_WRITE_DISABLE    0x04
@@ -25,26 +34,54 @@ static void W25Q64_WaitForBusy(void)
 
 uint8_t W25Q64_Init(void)
 {
-    W25Q_CS_HIGH();                                                      
-    vTaskDelay(pdMS_TO_TICKS(10));                                       
+    uint32_t chip_id = 0;
+    uint8_t  retry;
+
+    W25Q_CS_HIGH();
+    /* 上电等待：W25Q64 数据手册 tPUW（Power-Up to Write/Read）最大 5ms，
+     * 但 V3.3_A 要等 U1 建立输出 + C16/C17/C3 充电，这里给 50ms 充足余量。 */
+    vTaskDelay(pdMS_TO_TICKS(50));
+
+    /* 先发 0xAB（Release from Deep Power-Down），把芯片从深度掉电态唤醒。
+     * 原因：W25Q64 挂在 V3.3_A（常开轨）上，MCU 复位/STANDBY 唤醒后它可能
+     * 仍保持 W25Q64_PrepareForSleep() 发过的 0xB9 深度掉电状态，此时不认 0x9F。
+     * 若芯片本来就不在掉电态，发 0xAB 也是无害的。 */
+    {
+        uint8_t cmd_release = 0xAB;   /* Release Power-Down */
+        W25Q_CS_LOW();
+        HAL_SPI_Transmit(&W25Q_SPI_HANDLE, &cmd_release, 1, 100);
+        W25Q_CS_HIGH();
+        vTaskDelay(pdMS_TO_TICKS(5));  /* tRES1 约 3µs，这里给足 */
+    }
 
     if(xSemaphoreTake(g_SPI_Mutex, pdMS_TO_TICKS(1000)) != pdTRUE)       
     {
         return 1;
     }
 
-    uint32_t chip_id = 0;
-    uint8_t retry = 3;
+    retry = 5;
     while(retry--)
     {
         chip_id = W25Q64_ReadJEDEC_ID();
-        if(chip_id == W25Q64_JEDEC_ID) break;                            
-        vTaskDelay(pdMS_TO_TICKS(5));
+        if(W25Q_JEDEC_ID_MATCH(chip_id)) break;                            
+        vTaskDelay(pdMS_TO_TICKS(20));
     }
 
     xSemaphoreGive(g_SPI_Mutex);
 
-    if(chip_id == W25Q64_JEDEC_ID)
+    /* 诊断：把实际读到的 ID 打出来
+     *   0x000000 -> MISO 被拉低（没通信 / 芯片没供电）
+     *   0xFFFFFF -> MISO 悬空为高（CS 没生效 / 芯片没响应）
+     *   0xEF4017 -> W25Q64 (8MB)  ，正常
+     *   0xEF4018 -> W25Q128(16MB) ，正常（用低 8MB）
+     *   其它     -> 别的芯片或通信异常 */
+    printf("[W25Q64] JEDEC ID = 0x%06lX (%s)\r\n",
+           (unsigned long)chip_id,
+           (chip_id == W25Q64_JEDEC_ID)  ? "W25Q64, 8MB"  :
+           (chip_id == W25Q128_JEDEC_ID) ? "W25Q128, 16MB (use low 8MB)" :
+                                           "UNKNOWN!");
+
+    if(W25Q_JEDEC_ID_MATCH(chip_id))
     {
         return 0;
     }
@@ -232,6 +269,17 @@ uint8_t W25Q64_RetrieveData(SensorDataFrame_t *data)
 
 void W25Q64_PrepareForSleep(void)
 {
+    /* 发 0xB9（Deep Power-Down）：待机电流从约 10~15µA 降到约 1µA。
+     * 芯片不会被断电（挂在 V3.3_A 常开轨上），所以下次上电必须在
+     * W25Q64_Init() 里先发 0xAB 把它唤醒。 */
+    {
+        uint8_t cmd_dp = 0xB9;   /* Deep Power-Down */
+        W25Q_CS_LOW();
+        HAL_SPI_Transmit(&W25Q_SPI_HANDLE, &cmd_dp, 1, 100);
+        W25Q_CS_HIGH();
+        vTaskDelay(pdMS_TO_TICKS(1));   /* tDP 约 3µs */
+    }
+
     W25Q_CS_HIGH();                                                                                   
     __HAL_SPI_DISABLE(&W25Q_SPI_HANDLE);                                                              
     vTaskDelay(pdMS_TO_TICKS(5));                                                                     

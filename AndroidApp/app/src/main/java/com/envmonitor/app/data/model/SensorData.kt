@@ -11,6 +11,8 @@ data class SensorData(
     val humidity: Float = 0f,
     val lightIntensity: Float = 0f,
     val pm25: Int = 0,
+    /** 电池剩余电量百分比（0~100），来自 OneNET 的 battery 属性 */
+    val battery: Int = 0,
     val timestamp: Long = System.currentTimeMillis()
 )
 

@@ -46,6 +46,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.envmonitor.app.data.model.SensorData
 import com.envmonitor.app.ui.components.HistoryChart
+import com.envmonitor.app.ui.theme.BatteryColor
 import com.envmonitor.app.ui.theme.HumiColor
 import com.envmonitor.app.ui.theme.LightColor
 import com.envmonitor.app.ui.theme.Pm25Color
@@ -62,7 +63,9 @@ fun HistoryScreen(
     modifier: Modifier = Modifier
 ) {
     val state by viewModel.state.collectAsState()
-    val timeFmt = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
+    /* 历史记录列表的时间格式：带日期。
+     * 原来只有 HH:mm:ss，查 7 天时同一条 HH:mm 可能来自不同日期，无法区分。 */
+    val timeFmt = SimpleDateFormat("MM-dd HH:mm:ss", Locale.getDefault())
     var showDeleteDialog by remember { mutableStateOf(false) }
 
     Column(
@@ -118,6 +121,7 @@ fun HistoryScreen(
                     Constants.STREAM_HUMIDITY -> HumiColor
                     Constants.STREAM_LIGHT -> LightColor
                     Constants.STREAM_PM25 -> Pm25Color
+                    Constants.STREAM_BATTERY -> BatteryColor
                     else -> Color.Gray
                 }
                 Card(
@@ -154,6 +158,7 @@ fun HistoryScreen(
                 Constants.STREAM_HUMIDITY -> HumiColor
                 Constants.STREAM_LIGHT -> LightColor
                 Constants.STREAM_PM25 -> Pm25Color
+                Constants.STREAM_BATTERY -> BatteryColor
                 else -> Color.Gray
             }
 
@@ -242,6 +247,7 @@ fun HistoryScreen(
                                 Constants.STREAM_HUMIDITY -> String.format("%.1f%%", data.humidity)
                                 Constants.STREAM_LIGHT -> String.format("%.1f Lux", data.lightIntensity)
                                 Constants.STREAM_PM25 -> "${data.pm25} μg/m³"
+                                Constants.STREAM_BATTERY -> "${data.battery}%"
                                 else -> "-"
                             }
                             Row(

@@ -2,6 +2,34 @@
 
 > **STM32F103C8T6 低功耗环境监测系统 | Low-power STM32-based Environmental Monitor**
 
+> ### 📌 当前版本：**3.0**
+> 电源架构重构 · **实测待机 300 µA** · 1200 mAh 电池纯待机约 **5.5 个月**
+>
+> 第一版代码归档在 [`v1.0-archive`](../../tree/v1.0-archive) 分支 ｜ 全部版本见 [Releases](../../releases)
+>
+> **3.0 主要改动**：MCU 改为电池直供并与升压链解耦 ｜ 新增电池电量检测与低压保护 ｜
+> 完善睡前关断序列 ｜ App 支持回补 7 天历史数据 ｜ 详见下方 [版本说明](#-版本说明--versions)
+
+---
+
+## 🗂 版本说明 / Versions
+
+| 版本 | 核心内容 | 位置 |
+|---|---|---|
+| **3.0**（当前） | 电源架构重构、待机 300 µA、电池电量检测与低压保护、PMS 主动复位、App 回补历史 | `master` 分支 ｜ `v3.0` 标签 |
+| **1.0** | 首版：多传感器采集 + OneNet 上云 + Android 监控、STANDBY 双模式低功耗 | [`v1.0-archive`](../../tree/v1.0-archive) 分支 ｜ `v1.0` 标签 |
+
+**从 1.0 到 3.0 的关键改动（为什么续航能差这么多）：**
+
+| 维度 | 1.0 | **3.0** |
+|---|---|---|
+| **供电架构** | 电池 → 升压 5V → MCU 和所有外设都吃升压后的电 | **双轨**：`V3.3_A`（MCU 常开）+ `V3.3_SW`（受控外设） |
+| **升压模块** | 一直工作，睡眠时关不掉 | **P-MOSFET 高边开关门控**，睡眠时整条链断电 |
+| **待机电流** | 未实测（受升压模块静态电流制约） | **实测 300 µA** |
+| **电池管理** | 无 | 分压 + ADC1_IN1 检测、OLED/云端/App 三端显示、<3.40V 低压关机 |
+| **Flash** | W25Q64 | W25Q128（16 MB，代码兼容两种 ID） |
+| **电池** | 603450 | 703048 / 1200 mAh |
+
 ---
 
 ## 📖 项目介绍 / Overview
@@ -15,12 +43,13 @@
 | 层次 | 技术 |
 |------|------|
 | 微控制器 | STM32F103C8T6 (ARM Cortex-M3, 72MHz) |
-| RTOS | FreeRTOS (多任务: 传感器/网络/显示/看门狗/低功耗) |
-| 通信 | USART1(调试) / USART2(ESP8266) / USART3(PMS5003) / I2C1(SHT30+BH1750) / SPI1(W25Q64) |
+| RTOS | FreeRTOS (多任务: 传感器/网络/显示/低功耗) |
+| 通信 | USART1(调试) / USART2(ESP8266) / USART3(PMS5003) / I2C1(SHT30+BH1750) / SPI1(W25Q64/W25Q128) |
 | 云平台 | OneNet MQTT |
-| 移动端 | Android (Jetpack Compose + Room + MQTT) |
-| 供电 | 603450 锂电池 |
-| 断网重传 | W25Q64存储本地数据，断网时数据本地存储，恢复网络后自动补传 |
+| 移动端 | Android (Jetpack Compose + Room + HTTP API 轮询) |
+| 供电 | 703048 锂电池 1200 mAh + TP4056 充电 + MT3608 升压 + ME6211×2 |
+| 电池检测 | 电阻分压 → ADC1_IN1 (PA1)，OLED / 云平台 / App 三端显示电量 |
+| 断网重传 | W25Q64/W25Q128 存储本地数据，断网时落盘，恢复网络后自动补传 |
 
 ---
 
@@ -34,10 +63,11 @@
 | PM2.5 | 攀藤 PMS5003 | USART3 (PB10/PB11) | 激光粉尘传感器 |
 | 显示 | 0.96" OLED 128x64 | 软件I2C (PB8/PB9) | SSD1306驱动 |
 | WiFi | ESP8266 ESP-01S | USART2 (PA2/PA3) | AT固件 2.2.2.0 |
-| 存储 | W25Q64 | SPI1 (PA4~PA7) | 离线数据存储 |
+| 存储 | W25Q64 / W25Q128 | SPI1 (PA4~PA7) | 离线数据存储（代码兼容两种 JEDEC ID） |
 | 充电 | TP4056 模块 | — | 锂电池充电管理 |
-| 升压 | MT3608 模块 | — | 3.7V → 5V |
-| 电池 | 603450 1200mAh | — | 3.7V 锂聚合物 |
+| 升压 | MT3608 模块 | — | 3.7V → 5V（受 P-MOSFET 门控） |
+| 电池 | **703048 / 1200 mAh** | — | 3.7V 锂聚合物 |
+| 电池检测 | 电阻分压 R14/R15 | ADC1_IN1 (PA1) | 电量百分比（3.0 新增） |
 
 ### 引脚分配 / Pin Assignment
 
@@ -91,12 +121,11 @@ OLED: VCC→3.3V GND→GND SCL→PB8 SDA→PB9
 ```
 freertos_demo.c
 │
-├── start_task       → 初始化互斥锁、W25Q64、低功耗模块、创建子任务后自删除
-├── SensorTask       → 每2秒采集一次：SHT30 → BH1750 → PMS5003
-├── NetworkTask      → 初始化ESP8266 → 连接WiFi → MQTT → 每10分钟上传
+├── start_task       → 初始化互斥锁、W25Q、ADC、低功耗模块、创建子任务后自删除
+├── SensorTask       → 每2秒采集一次：SHT30 → BH1750 → PMS5003 → 电池电压
+├── NetworkTask      → 低压检查 → 初始化ESP8266 → 连接WiFi → MQTT → 上传（常亮10分钟/周期一次性）
 ├── DisplayTask      → 每秒更新OLED显示
-├── WatchdogTask     → 每2秒检查任务存活状态，喂独立看门狗
-└── LowPower_Task    → 接收休眠信号，进入低功耗模式
+└── LowPower_Task    → 接收休眠信号，执行关断序列后进入 STANDBY
 ```
 
 ### 传感器驱动 / Sensor Drivers
@@ -152,10 +181,13 @@ AndroidApp/
 
 ### 低功耗设计 / Low Power
 
-- 进入 STANDBY 模式，功耗降至 ~μA 级别
-- 独立看门狗 IWDG 26 秒超时自动复位
-- RTC 备份寄存器计数，约 10 分钟完整唤醒一次采集上传
-- 首次上传后 5 秒自动进入休眠
+- 进入 STANDBY 模式，**实测整机待机电流 300 µA**（1200 mAh 电池约 5.5 个月）
+- 睡前关断序列：OLED 关显示（`0xAE`+关电荷泵）→ BH1750 掉电 → Flash 深度掉电（`0xB9`）→ 关断升压链
+- RTC 闹钟周期唤醒（周期模式 30 分钟 / 常亮模式 10 分钟上报一次）
+- 唤醒后按复位标志区分「周期唤醒」与「手动开机」两种运行姿态
+
+**功耗构成（300 µA 的拆解）：** LDO 静态 30 µA + 电池分压 21 µA + OLED 关屏 10 µA +
+Flash 深度掉电 1 µA + MCU STANDBY 3 µA + PMS5003 残留电压漏电约 200 µA
 
 ---
 
@@ -208,8 +240,8 @@ AndroidApp/
 
 ```
 ├── Core/                    HAL库配置 & 外设初始化 (CubeMX生成)
-│   ├── Inc/                 gpio, i2c, spi, usart, rtc, iwdg 头文件
-│   └── Src/                 gpio, i2c, spi, usart, rtc, iwdg, main, stm32f1xx_it
+│   ├── Inc/                 gpio, i2c, spi, usart, rtc, adc 头文件
+│   └── Src/                 gpio, i2c, spi, usart, rtc, adc, main, stm32f1xx_it
 ├── Int/                     项目核心代码
 │   ├── freertos_demo.c      FreeRTOS任务创建 & 主逻辑
 │   ├── sht30.c / bh1750.c   I2C传感器驱动
